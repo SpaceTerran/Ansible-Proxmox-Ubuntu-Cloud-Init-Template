@@ -1,0 +1,22 @@
+#cloud-config
+user: {{ ciuser }}
+password: {{ encrypted_password }}
+ssh_authorized_keys:
+  - {{ sshkey }}
+chpasswd:
+  expire: False
+users:
+  - name: {{ ciuser }}
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: users, admin
+    shell: /bin/bash
+packages:
+  - qemu-guest-agent
+  - linux-generic-hwe-22.04  
+package_update: true
+package_upgrade: true
+package_reboot_if_required: true
+runcmd:
+  - [ systemctl, daemon-reload ]
+  - [ systemctl, enable, qemu-guest-agent.service ]
+  - [ systemctl, start, --no-block, qemu-guest-agent.service ]
