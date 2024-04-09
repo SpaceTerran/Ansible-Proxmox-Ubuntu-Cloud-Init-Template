@@ -1,0 +1,185 @@
+---
+- name: Prepare Proxmox template with Cloud-Init
+  hosts: your-proxmox-node
+  become: false
+  vars:
+    proxmox_node: "your-proxmox-node"
+    proxmox_storage: "truenas"  # the storage id where the images and VMs will be stored # default is "local-lvm"
+
+    # Cloud image settings
+    cloud_image_url: "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+    cloud_image_storage: "/var/lib/vz/template/iso"
+    cloud_image_name: "ubuntu-22.04-server-cloudimg-amd64.img"
+
+    # VM settings
+    vm_id: 5001  # make sure this VM ID is not in use on your Proxmox
+    cores: 2
+    memory: 2048
+    resize_disk: 10  # in GB, use this to increase the disk size of the VM
+    QEMU_AGENT: true
+    UEFI: true
+
+    # Template Name
+    template_name: "ubuntu-22.04-cloudinit-template"
+
+    # Cloud-Init User Data settings
+    user_data_file: "user-data.yaml.j2"  # make sure this file exists and contains your cloud-init user data
+    user_data_file_storage: "snippets"  # the storage id where the snippets will be stored. # default is "local"
+    user_data_file_storage_path: "/mnt/pve/snippets/" # default is "/var/lib/vz/snippets"
+
+    # Cloud-Init login settings
+    ciuser: "serveradmin"
+    # cipassword - stored in a vault file
+    # sshkey - stored in a vault file
+
+  tasks:
+    - name: Include vault secrets
+      ansible.builtin.include_vars:
+        file: secrets.yaml
+      no_log: true
+
+    - name: Generate SHA-512 hashed password
+      ansible.builtin.set_fact:
+        encrypted_password: "{{ cipassword | password_hash('sha512') }}"
+
+    - name: Download the cloud image
+      ansible.builtin.get_url:
+        url: "{{ cloud_image_url }}"
+        dest: "{{ cloud_image_storage }}/{{ cloud_image_name }}"
+        owner: root
+        group: root
+        mode: '0644'
+        timeout: 60
+
+    - name: Check if VM ID is in use
+      ansible.builtin.shell: "qm status {{ vm_id }}"
+      register: vm_status
+      ignore_errors: true
+      args:
+        executable: /bin/bash
+      changed_when: vm_status.rc == 0 or vm_status.rc == 1
+
+    - name: Create VM for template
+      ansible.builtin.shell: "qm create {{ vm_id }} --name {{ template_name }} --core {{ cores }} --memory {{ memory }} --net0 virtio,bridge=vmbr0"
+      args:
+        executable: /bin/bash
+      when: vm_status.rc != 0
+      register: create_vm
+      changed_when: create_vm.rc == 0
+      failed_when: create_vm.rc not in [0]
+
+    - name: Import the disk to Proxmox
+      ansible.builtin.shell: |
+        qm importdisk {{ vm_id }} {{ cloud_image_storage }}/{{ cloud_image_name }} {{ proxmox_storage }}
+      args:
+        executable: /bin/bash
+      when: vm_status.rc != 0
+      register: import_disk
+      changed_when: import_disk.rc == 0
+      failed_when: import_disk.rc not in [0]
+
+    - name: Attach the disk to the VM
+      ansible.builtin.shell: |
+        qm set {{ vm_id }} --scsihw virtio-scsi-pci --scsi0 {{ proxmox_storage }}:{{ vm_id }}/vm-{{ vm_id }}-disk-0.raw
+      args:
+        executable: /bin/bash
+      when: vm_status.rc != 0
+      register: attach_disk
+      changed_when: attach_disk.rc == 0
+      failed_when: attach_disk.rc not in [0]
+
+    - name: Configure add Cloud-Init drive, set serial console, boot order, and network to dhcp
+      ansible.builtin.shell: |
+        qm set {{ vm_id }} --ide2 {{ proxmox_storage }}:cloudinit --boot c --bootdisk scsi0 --serial0 socket --vga serial0 --citype nocloud --ipconfig0 ip=dhcp
+      args:
+        executable: /bin/bash
+      when: vm_status.rc != 0
+      register: cloud_init
+      changed_when: cloud_init.rc == 0
+      failed_when: cloud_init.rc not in [0]
+
+    - name: Copy ssh key to Proxmox node temporarily
+      ansible.builtin.copy:
+        dest: "{{ user_data_file_storage_path }}/snippets/{{ vm_id }}.pub"  # Specify the destination path here
+        content: "{{ sshkey }}"
+        remote_src: false
+        owner: root
+        group: root
+        mode: '0644'
+      when: vm_status.rc != 0
+
+    # - name: "Configure Cloud-Init: ssh public key and user and password"
+    #   ansible.builtin.shell: |
+    #     qm set {{ vm_id }} --sshkeys "{{ user_data_file_storage_path }}/snippets/{{ vm_id }}.pub" --ciuser {{ ciuser }} --cipassword "{{ cipassword }}"
+    #   args:
+    #     executable: /bin/bash
+    #   when: vm_status.rc != 0
+    #   register: cloud_init_ssh_pw
+    #   changed_when: cloud_init_ssh_pw.rc == 0
+    #   failed_when: cloud_init_ssh_pw.rc not in [0]
+
+    - name: Delete temporarily copied ssh key
+      ansible.builtin.file:
+        path: "{{ user_data_file_storage_path }}/snippets/{{ vm_id }}.pub"
+        state: absent
+      when: vm_status.rc != 0
+
+    - name: Enable QEMU Agent
+      ansible.builtin.shell: |
+        qm set {{ vm_id }} --agent 1
+      args:
+        executable: /bin/bash
+      when: vm_status.rc != 0 and QEMU_AGENT
+      register: enable_qemu_agent
+      changed_when: enable_qemu_agent.rc == 0
+      failed_when: enable_qemu_agent.rc not in [0]
+
+    - name: Resize disk
+      ansible.builtin.shell: |
+        qm resize {{ vm_id }} scsi0 +{{ resize_disk }}G
+      args:
+        executable: /bin/bash
+      when: vm_status.rc != 0
+      register: resize_disk
+      changed_when: resize_disk.rc == 0
+      failed_when: resize_disk.rc not in [0]
+
+    - name: Copy user-data to Proxmox node
+      ansible.builtin.template:
+        src: "./{{ user_data_file }}"
+        remote_src: false
+        dest: "{{ user_data_file_storage_path }}/snippets/user-data.yaml"
+        owner: root
+        group: root
+        mode: '0644'
+      when: vm_status.rc != 0
+
+    - name: Attach user-data to VM
+      ansible.builtin.shell: |
+        qm set {{ vm_id }} --cicustom "user={{ user_data_file_storage }}:snippets/user-data.yaml"
+      args:
+        executable: /bin/bash
+      when: vm_status.rc != 0
+      register: attach_user_data
+      changed_when: attach_user_data.rc == 0
+      failed_when: attach_user_data.rc not in [0]
+
+    - name: Enable UEFI
+      ansible.builtin.shell: |
+        qm set {{ vm_id }} --bios ovmf --machine q35 --efidisk0 {{ proxmox_storage }}:0
+      args:
+        executable: /bin/bash
+      when: vm_status.rc != 0 and UEFI
+      register: enable_uefi
+      changed_when: enable_uefi.rc == 0
+      failed_when: enable_uefi.rc not in [0]
+
+    - name: Convert VM to template
+      ansible.builtin.shell: |
+        qm template {{ vm_id }}
+      args:
+        executable: /bin/bash
+      when: vm_status.rc != 0
+      register: convert_template
+      changed_when: convert_template.rc == 0
+      failed_when: convert_template.rc not in [0]
