@@ -1,4 +1,4 @@
-## Take a look at the blog post that is broken out into two parts: [(How-To) Deploying Cloud-Init Template with Ubuntu on Proxmox with Ansible Playbook - Part 1](https://spaceterran.com/posts/Ansible-Proxmox-Ubuntu-Template-Part-1/) and [(How-To) Deploying Cloud-Init Template with Ubuntu on Proxmox with Ansible Playbook - Part 2](https://spaceterran.com/posts/Ansible-Proxmox-Ubuntu-Template-Part-2/).
+## Take a look at the blog post that is broken out into two parts: [(How-To) Deploying Cloud-Init Template with Ubuntu on Proxmox with Ansible Playbook - Part 1](https://spaceterran.com/posts/Ansiable-Proxmox-Ubuntu-Template-Part-1/) and [(How-To) Deploying Cloud-Init Template with Ubuntu on Proxmox with Ansible Playbook - Part 2](https://spaceterran.com/posts/Ansiable-Proxmox-Ubuntu-Template-Part-2/).
 
 
 The `user-data` below will demonstrate how to create a `user account`, embed the `ssh keys` for key-based login, allowing for sudo without a password, installing the `hwe kernel`, and finally the `qemu-guest-agent` or the virtual machine guest tools.
